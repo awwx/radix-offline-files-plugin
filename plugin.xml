@@ -39,7 +39,8 @@
         <source-file src="src/ios/lib/Underscore/USDictionaryWrapper.m" />
         <header-file src="src/ios/lib/Underscore/Underscore+Functional.h" />
         <source-file src="src/ios/lib/Underscore/Underscore+Functional.m" />
-        <header-file src="src/ios/lib/Underscore/Underscore.h" />
+        <header-file src="src/ios/lib/Underscore/Underscore.h"
+                     target-dir="lib/Underscore"/>
         <source-file src="src/ios/lib/Underscore/Underscore.m" />
         <header-file src="src/ios/lib/Underscore/Strings/USStringWrapper.h" />
         <source-file src="src/ios/lib/Underscore/Strings/USStringWrapper.m" />
