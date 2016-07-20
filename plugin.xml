@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        id="cordova-plugin-offline-files"
+        version="0.0.1">
+    <name>Offline Files Plugin</name>
+    <description>Cordova Offline Files Plugin</description>
+    <license>MIT</license>
+    <keywords>cordova</keywords>
+    <repo></repo>
+    <issue></issue>
+
+    <platform name="ios">
+        <config-file target="config.xml" parent="/*">
+            <feature name="OfflineFilesPlugin">
+                <param name="ios-package" value="OfflineFilesPlugin" />
+                <param name="onload" value="true" />
+            </feature>
+        </config-file>
+
+        <header-file src="src/ios/AppDelegate+UrlSession.h" />
+        <source-file src="src/ios/AppDelegate+UrlSession.m" />
+
+        <header-file src="src/ios/OfflineFilesPlugin.h" />
+        <source-file src="src/ios/OfflineFilesPlugin.m" />
+
+        <header-file src="src/ios/Queue.h" />
+        <source-file src="src/ios/Queue.m" />
+
+        <header-file src="src/ios/Sql.h" />
+        <source-file src="src/ios/Sql.m" />
+
+        <header-file src="src/ios/Data.h" />
+        <source-file src="src/ios/Data.m" />
+
+        <header-file src="src/ios/lib/Underscore/USArrayWrapper.h" />
+        <source-file src="src/ios/lib/Underscore/USArrayWrapper.m" />
+        <header-file src="src/ios/lib/Underscore/USConstants.h" />
+        <header-file src="src/ios/lib/Underscore/USDictionaryWrapper.h" />
+        <source-file src="src/ios/lib/Underscore/USDictionaryWrapper.m" />
+        <header-file src="src/ios/lib/Underscore/Underscore+Functional.h" />
+        <source-file src="src/ios/lib/Underscore/Underscore+Functional.m" />
+        <header-file src="src/ios/lib/Underscore/Underscore.h" />
+        <source-file src="src/ios/lib/Underscore/Underscore.m" />
+        <header-file src="src/ios/lib/Underscore/Strings/USStringWrapper.h" />
+        <source-file src="src/ios/lib/Underscore/Strings/USStringWrapper.m" />
+        <header-file src="src/ios/lib/Underscore/Strings/Underscore+Strings.h" />
+        <source-file src="src/ios/lib/Underscore/Strings/Underscore+Strings.m" />
+        <header-file src="src/ios/lib/Underscore/Times/Underscore+Times.h" />
+        <source-file src="src/ios/lib/Underscore/Times/Underscore+Times.m" />
+
+        <framework src="libsqlite3.dylib" />
+    </platform>
+</plugin>
