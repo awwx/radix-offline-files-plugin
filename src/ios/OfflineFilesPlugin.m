@@ -1112,6 +1112,55 @@ andRespond:(CDVInvokedUrlCommand*)command
   }];
 }
 
+
+// TODO this would be more efficient if each collection had its own
+// NSURLSession.
+
+-(void)downloadAll:(CDVInvokedUrlCommand*)command
+{
+  NSString *collectionId = [command.arguments objectAtIndex:0];
+
+  // First get download tasks already running, and then enter the
+  // serial queue.
+
+  [self.session getTasksWithCompletionHandler:
+    ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+      // We're in the default NSURLSession delegate queue
+
+      NSArray *alreadyDownloadingFileIds =
+        Underscore.arrayMap(
+          downloadTasks,
+          ^NSString *(NSURLSessionDownloadTask* task) {
+            NSDictionary *fields =
+              [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
+            if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
+              return [fields objectForKey:@"fileId"];
+            else
+              return nil;
+          });
+
+      // Now enter the serial queue
+
+      [self
+        name:@"download"
+        command:command
+        bgResult:^() {
+          NSDictionary *r1 =
+            [self.data allDownloads:collectionId excluding:alreadyDownloadingFileIds];
+          if ([Data isError:r1])
+            return r1;
+
+          NSArray *fileIds = [r1 objectForKey:@"fileIds"];
+
+          return
+            [self
+              addDownloadTasks:collectionId
+              fileIds:fileIds];
+        }];
+  }];
+}
+
+
 -(void)
 addUploadTask:(NSString *)uploadUrl
 file:(NSDictionary *)file
@@ -1170,8 +1219,6 @@ serverDoc:(NSString *)serverDoc
     [[collectionId stringByAppendingString:@":"]
        stringByAppendingString:fileId];
 
-  NSNumber *taskIdentifier =
-    [NSNumber numberWithUnsignedInteger:uploadTask.taskIdentifier];
   [uploadTask resume];
 }
 
@@ -1200,6 +1247,18 @@ fileId:(NSString *)fileId
 
   [downloadTask resume];
 
+  return @{};
+}
+
+-(NSDictionary *)
+addDownloadTasks:(NSString *)collectionId
+fileIds:(NSArray *)fileIds
+{
+  for (NSString *fileId in fileIds) {
+    NSDictionary *r = [self addDownloadTask:collectionId fileId:fileId];
+    if ([Data isError:r])
+      return r;
+  }
   return @{};
 }
 
@@ -1254,15 +1313,36 @@ fileId:(NSString *)fileId
 -(void)deleteUnmarked:(CDVInvokedUrlCommand*)command
 {
   NSString *collectionId = [command.arguments objectAtIndex:0];
-  NSString *partition    = [command.arguments objectAtIndex:1];
 
   [self
     name:@"deleteUnmarked"
     command:command
     bgResult:^(){
-      return [self.data
-               deleteUnmarked:collectionId
-               reportingPartition:partition];
+      return [self.data deleteUnmarked:collectionId];
+    }];
+}
+
+-(void)markFileAsDeleted:(CDVInvokedUrlCommand*)command
+{
+  NSString *fileId = [command.arguments objectAtIndex:0];
+
+  [self
+    name:@"markFileAsDeleted"
+    command:command
+    bgResult:^(){
+      return [self.data markFileAsDeleted:fileId];
+    }];
+}
+
+-(void)removeDeletedFile:(CDVInvokedUrlCommand*)command
+{
+  NSString *fileId = [command.arguments objectAtIndex:0];
+
+  [self
+    name:@"removeDeletedFile"
+    command:command
+    bgResult:^(){
+      return [self.data removeDeletedFile:fileId];
     }];
 }
 

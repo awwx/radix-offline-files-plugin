@@ -36,6 +36,10 @@ notification:(NSString *)notification;
 
 -(NSDictionary *)download:(NSString *)fileId;
 
+-(NSDictionary *)
+allDownloads:(NSString *)collectionId
+excluding:(NSArray *)excludingFileIds;
+
 -(NSDictionary *)readAllFilesNeedingUpload:(NSString *)collectionId;
 
 -(NSDictionary *)readDownloads;
@@ -84,8 +88,10 @@ taskId:(NSNumber *)taskId;
 
 -(NSDictionary *)beginMark:(NSString *)collectionId;
 
--(NSDictionary *)
-deleteUnmarked:(NSString *)collectionId
-reportingPartition:(NSString *)partition;
+-(NSDictionary *)deleteUnmarked:(NSString *)collectionId;
+
+-(NSDictionary *)markFileAsDeleted:(NSString *)fileId;
+
+-(NSDictionary *)removeDeletedFile:(NSString *)fileId;
 
 @end
