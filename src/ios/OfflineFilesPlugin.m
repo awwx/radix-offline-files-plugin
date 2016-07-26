@@ -140,6 +140,8 @@ successCallback:(Callback)callback
     [self sendEvent:event];
   } else {
     [self.savedEvents addObject:event];
+    if ([event objectForKey:@"error"])
+      NSLog(@"OfflineFilePlugin: %@", event);
   }
 }
 
@@ -156,6 +158,7 @@ forContext:(NSString *)context
   if (context) {
     [event setObject:context forKey:@"context"];
   }
+
   [self emitEvent:event];
 }
 
@@ -534,8 +537,6 @@ didFinishDownloadingToURL:(NSURL *)location
         return @{};
       }
 
-      // TODO if not successful, update database(?) and return
-
       NSString *collectionId   = [file objectForKey:@"collectionId"];
       NSString *collectionPath = [file objectForKey:@"collectionPath"];
       NSString *filename       = [file objectForKey:@"filename"];
@@ -572,8 +573,7 @@ didFinishDownloadingToURL:(NSURL *)location
   dispatch_once(&onceToken, ^{
     NSURLSessionConfiguration *configuration =
      [NSURLSessionConfiguration
-       // TODO session name
-       backgroundSessionConfigurationWithIdentifier:@"theSession"];
+       backgroundSessionConfigurationWithIdentifier:@"offline-files"];
 
     session = [NSURLSession
                 sessionWithConfiguration:configuration
@@ -676,7 +676,13 @@ notify:(NSString *)notificationJSON
 {
   UILocalNotification *n = [[UILocalNotification alloc] init];
 
-  NSObject *d = [Data deserialize:notificationJSON];
+  NSDictionary *r1 = [Data deserialize:notificationJSON];
+  if ([Data isError:r1]) {
+    [self emitErrorResult:r1];
+    return;
+  }
+
+  NSObject *d = [r1 objectForKey:@"value"];
   if (! [d isKindOfClass:[NSDictionary class]])
     return;
 
@@ -771,19 +777,19 @@ bgResult:(NSDictionary *(^)())operation
 
 -(void)addOriginalFile:(CDVInvokedUrlCommand*)command
 {
-  NSDictionary *data = [command.arguments objectAtIndex:0];
+  NSDictionary *file = [command.arguments objectAtIndex:0];
 
   [self
     name:@"addOriginalFile"
     command:command
     background:^(Callback callback){
-      NSDictionary *r1 = [self.data addUpload:data];
+      NSDictionary *r1 = [self.data addOriginal:file];
       if ([Data isError:r1]) {
         callback(r1);
         return;
       }
 
-      NSString *collectionId = [data objectForKey:@"collectionId"];
+      NSString *collectionId = [file objectForKey:@"collectionId"];
       NSDictionary *r2 = [self.data readAutoUpload:collectionId];
       if ([Data isError:r2]) {
         callback(r2);
@@ -800,7 +806,7 @@ bgResult:(NSDictionary *(^)())operation
         NSString *uploadUrl = [r3 objectForKey:@"value"];
 
         NSDictionary *r4 =
-          [self.data readFileWithCollectionPath:[data objectForKey:@"fileId"]];
+          [self.data readFileWithCollectionPath:[file objectForKey:@"fileId"]];
         if ([Data isError:r4]) {
           callback(r4);
           return;
@@ -843,35 +849,45 @@ result:(NSDictionary *)result
 {
   NSString *collectionId = [command.arguments objectAtIndex:0];
 
-  [self
-    name:@"setAutoUploadOn"
-    background:^(Callback callback) {
-      NSDictionary *r1 = [self.data switchToAutoUploadOn:collectionId];
-      if ([Data isError:r1]) {
-        callback(r1);
-        return;
-      }
+  // First get upload tasks already running, and then enter the
+  // serial queue.
 
-      NSDictionary *r2 = [self.data readAllFilesNeedingUpload:collectionId];
-      if ([Data isError:r2]) {
-        callback(r2);
-        return;
-      }
+  [self.session getTasksWithCompletionHandler:
+    ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+      // We're in the default NSURLSession delegate queue
 
-      NSArray *files = [r2 objectForKey:@"files"];
+      NSArray *excludeFileIds =
+        [self listUploadingFiles:collectionId uploadTasks:uploadTasks];
 
-      NSDictionary *r3 = [self.data readConfig:@"uploadUrl"];
-      if ([Data isError:r3]) {
-        callback(r3);
-        return;
-      }
+      // Now enter the serial queue
 
-      NSString *uploadUrl = [r3 objectForKey:@"value"];
+      [self
+        name:@"setAutoUploadOn"
+        command:command
+        bgResult:^() {
+          NSDictionary *r1 = [self.data switchToAutoUploadOn:collectionId];
+          if ([Data isError:r1])
+            return r1;
 
-      callback(@{ @"uploadUrl": uploadUrl, @"files": files });
-    }
-    callback:^(NSDictionary *result) {
-      [self addUploadTasks:result andRespond:command];
+          NSDictionary *r2 =
+            [self.data
+                readAllFilesNeedingUpload:collectionId
+                excluding:excludeFileIds];
+          if ([Data isError:r2])
+            return r2;
+          NSArray *files = [r2 objectForKey:@"files"];
+
+          NSDictionary *r3 = [self.data readConfig:@"uploadUrl"];
+          if ([Data isError:r3])
+            return r3;
+          NSString *uploadUrl = [r3 objectForKey:@"value"];
+
+          for (NSDictionary *file in files) {
+            [self addUploadTask:uploadUrl file:file];
+          }
+
+          return @{};
+        }];
     }];
 }
 
@@ -900,6 +916,22 @@ result:(NSDictionary *)result
     }];
 }
 
+-(void)cancelUpload:(CDVInvokedUrlCommand*)command
+{
+  NSString *fileId = [command.arguments objectAtIndex:0];
+
+  [self.session getTasksWithCompletionHandler:
+    ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+      for (NSURLSessionUploadTask *uploadTask in uploadTasks) {
+        if ([fileId isEqual:[OfflineFilesPlugin taskFileId:uploadTask]]) {
+          [uploadTask cancel];
+          break;
+        }
+      }
+      [self respond:command result:@{}];
+    }];
+}
+
 -(void)readFile:(CDVInvokedUrlCommand*)command
 {
   NSString *fileId = [command.arguments objectAtIndex:0];
@@ -914,13 +946,16 @@ result:(NSDictionary *)result
 
 -(void)readFilesForPartition:(CDVInvokedUrlCommand*)command
 {
-  NSString *partition = [command.arguments objectAtIndex:0];
+  NSString *collectionId = [command.arguments objectAtIndex:0];
+  NSString *partition    = [command.arguments objectAtIndex:1];
 
   [self
     name:@"readFilesForPartition"
     command:command
     bgResult:^() {
-      return [self.data readFilesForPartition:partition];
+      return [self.data
+               readFilesForPartition:collectionId
+               partition:partition];
     }];
 }
 
@@ -964,7 +999,12 @@ andRespond:(CDVInvokedUrlCommand*)command
   NSString *collectionId = [command.arguments objectAtIndex:1];
   NSObject *notification = [command.arguments objectAtIndex:2];
 
-  NSString *notificationJSON = [Data serialize:notification];
+  NSDictionary *r0 = [Data serialize:notification];
+  if ([Data isError:r0]) {
+    [self respond:command withError:r0];
+    return;
+  }
+  NSString *notificationJSON = [r0 objectForKey:@"value"];
 
   [self
     name:@"uploadAll"
@@ -1017,7 +1057,12 @@ andRespond:(CDVInvokedUrlCommand*)command
   NSString *partition    = [command.arguments objectAtIndex:2];
   NSObject *notification = [command.arguments objectAtIndex:3];
 
-  NSString *notificationJSON = [Data serialize:notification];
+  NSDictionary *r0 = [Data serialize:notification];
+  if ([Data isError:r0]) {
+    [self respond:command withError:r0];
+    return;
+  }
+  NSString *notificationJSON = [r0 objectForKey:@"value"];
 
   [self
     name:@"uploadPartition"
@@ -1113,6 +1158,42 @@ andRespond:(CDVInvokedUrlCommand*)command
 }
 
 
+// Return a list of fileId's for download tasks in the collection.
+
+-(NSArray *)
+listDownloadingFiles:(NSString *)collectionId
+downloadTasks:(NSArray *)downloadTasks
+{
+  return
+    Underscore.arrayMap(
+      downloadTasks,
+      ^NSString *(NSURLSessionDownloadTask* task) {
+        NSDictionary *fields =
+          [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
+        if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
+          return [fields objectForKey:@"fileId"];
+        else
+          return nil;
+      });
+}
+
+-(NSArray *)
+listUploadingFiles:(NSString *)collectionId
+uploadTasks:(NSArray *)uploadTasks
+{
+  return
+    Underscore.arrayMap(
+      uploadTasks,
+      ^NSString *(NSURLSessionUploadTask *task) {
+        NSDictionary *fields =
+          [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
+        if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
+          return [fields objectForKey:@"fileId"];
+        else
+          return nil;
+      });
+}
+
 // TODO this would be more efficient if each collection had its own
 // NSURLSession.
 
@@ -1127,26 +1208,17 @@ andRespond:(CDVInvokedUrlCommand*)command
     ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
       // We're in the default NSURLSession delegate queue
 
-      NSArray *alreadyDownloadingFileIds =
-        Underscore.arrayMap(
-          downloadTasks,
-          ^NSString *(NSURLSessionDownloadTask* task) {
-            NSDictionary *fields =
-              [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
-            if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
-              return [fields objectForKey:@"fileId"];
-            else
-              return nil;
-          });
+      NSArray *excludeFileIds =
+        [self listDownloadingFiles:collectionId downloadTasks:downloadTasks];
 
       // Now enter the serial queue
 
       [self
-        name:@"download"
+        name:@"downloadAll"
         command:command
         bgResult:^() {
           NSDictionary *r1 =
-            [self.data allDownloads:collectionId excluding:alreadyDownloadingFileIds];
+            [self.data downloadAll:collectionId excluding:excludeFileIds];
           if ([Data isError:r1])
             return r1;
 
@@ -1160,6 +1232,59 @@ andRespond:(CDVInvokedUrlCommand*)command
   }];
 }
 
+
+-(void)resumeTransfers:(CDVInvokedUrlCommand*)command
+{
+  NSString *collectionId = [command.arguments objectAtIndex:0];
+
+  [self.session getTasksWithCompletionHandler:
+    ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
+      // We're in the default NSURLSession delegate queue
+
+      NSArray *excludeDownloads =
+        [self listDownloadingFiles:collectionId downloadTasks:downloadTasks];
+
+      NSArray *excludeUploads =
+        [self listUploadingFiles:collectionId uploadTasks:uploadTasks];
+
+      // Now enter the serial queue
+
+      [self
+        name:@"resumeTransfers"
+        command:command
+        bgResult:^() {
+          NSDictionary *r1 =
+            [self.data readDownloads:collectionId excluding:excludeDownloads];
+          if ([Data isError:r1])
+            return r1;
+
+          NSArray *fileIds = [r1 objectForKey:@"fileIds"];
+
+          for (NSString *fileId in fileIds) {
+            [self addDownloadTask:collectionId fileId:fileId];
+          }
+
+          NSDictionary *r2 =
+            [self.data readUploads:collectionId excluding:excludeUploads];
+          if ([Data isError:r2])
+            return r2;
+          NSArray *files = [r2 objectForKey:@"files"];
+
+          NSLog(@"need uploads: %@", files);
+
+          NSDictionary *r3 = [self.data readConfig:@"uploadUrl"];
+          if ([Data isError:r3])
+            return r3;
+          NSString *uploadUrl = [r3 objectForKey:@"value"];
+
+          for (NSDictionary *file in files) {
+            [self addUploadTask:uploadUrl file:file];
+          }
+
+          return @{};
+        }];
+    }];
+}
 
 -(void)
 addUploadTask:(NSString *)uploadUrl
@@ -1343,6 +1468,18 @@ fileIds:(NSArray *)fileIds
     command:command
     bgResult:^(){
       return [self.data removeDeletedFile:fileId];
+    }];
+}
+
+-(void)readDeletedFiles:(CDVInvokedUrlCommand*)command
+{
+  NSString *collectionId = [command.arguments objectAtIndex:0];
+
+  [self
+    name:@"readDeletedFiles"
+    command:command
+    bgResult:^(){
+      return [self.data readDeletedFiles:collectionId];
     }];
 }
 

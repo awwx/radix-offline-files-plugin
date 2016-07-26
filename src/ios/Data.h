@@ -9,8 +9,8 @@ typedef void (^Callback)(NSDictionary *);
 +(NSDictionary *)okResult;
 +(NSDictionary *)exceptionResult:(NSException *)exception;
 
-+(NSString *)serialize:(NSObject *)obj;
-+(NSObject *)deserialize:(NSString *)json;
++(NSDictionary *)serialize:(NSObject *)obj;
++(NSDictionary *)deserialize:(NSString *)json;
 
 -(NSDictionary *)readConfig:(NSString *)key;
 
@@ -21,7 +21,7 @@ typedef void (^Callback)(NSDictionary *);
 -(NSDictionary *)configureCollection:(NSDictionary *)collection;
 
 -(NSDictionary *)
-addUpload:(NSDictionary *)data;
+addOriginal:(NSDictionary *)file;
 
 -(NSDictionary *)
 uploadAll:(NSString *)jobId
@@ -37,10 +37,21 @@ notification:(NSString *)notification;
 -(NSDictionary *)download:(NSString *)fileId;
 
 -(NSDictionary *)
-allDownloads:(NSString *)collectionId
-excluding:(NSArray *)excludingFileIds;
+downloadAll:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds;
 
--(NSDictionary *)readAllFilesNeedingUpload:(NSString *)collectionId;
+-(NSDictionary *)
+readDownloads:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds;
+
+-(NSDictionary *)
+readUploads:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds;
+
+-(NSDictionary *)
+readAllFilesNeedingUpload:
+(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds;
 
 -(NSDictionary *)readDownloads;
 
@@ -54,17 +65,11 @@ excluding:(NSArray *)excludingFileIds;
 
 -(NSDictionary *)uploadComplete:(NSString *)fileId;
 
--(NSDictionary *)
-setUpload:(NSString *)fileId
-taskId:(NSNumber *)taskId;
-
--(NSDictionary *)
-setDownload:(NSString *)fileId
-taskId:(NSNumber *)taskId;
-
 -(NSDictionary *)readFile:(NSString *)fileId;
 
--(NSDictionary *)readFilesForPartition:(NSString *)partition;
+-(NSDictionary *)
+readFilesForPartition:(NSString *)collectionId
+partition:(NSString *)partition;
 
 -(NSDictionary *)readFileWithCollectionPath:(NSString *)fileId;
 
@@ -93,5 +98,7 @@ taskId:(NSNumber *)taskId;
 -(NSDictionary *)markFileAsDeleted:(NSString *)fileId;
 
 -(NSDictionary *)removeDeletedFile:(NSString *)fileId;
+
+-(NSDictionary *)readDeletedFiles:(NSString *)collectionId;
 
 @end

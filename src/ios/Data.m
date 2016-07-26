@@ -4,7 +4,7 @@
 
 static BOOL debug = NO;
 
-static NSString* serialize(NSObject *obj) {
+static NSDictionary* serialize(NSObject *obj) {
   NSArray *container = @[obj];
 
   NSError *error = nil;
@@ -16,9 +16,10 @@ static NSString* serialize(NSObject *obj) {
       error:&error];
 
   if (error) {
-    // TODO
-    NSLog(@"error serializing to JSON: %@", error);
-    return nil;
+    return @{
+      @"error": [NSString
+                  stringWithFormat:@"error serializing to JSON: %@", error]
+    };
   }
 
   NSString *string =
@@ -27,10 +28,10 @@ static NSString* serialize(NSObject *obj) {
   string = [string substringToIndex:(string.length - 1)];
   string = [string substringFromIndex:1];
 
-  return string;
+  return @{ @"value": string };
 }
 
-static NSObject *deserialize(NSString *json) {
+static NSDictionary *deserialize(NSString *json) {
   NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
 
   NSError *error = nil;
@@ -42,12 +43,13 @@ static NSObject *deserialize(NSString *json) {
       error:&error];
 
   if (error) {
-    // TODO
-    NSLog(@"error deserializing from JSON: %@", error);
-    return nil;
+    return @{
+      @"error": [NSString
+                  stringWithFormat:@"error deserializing from JSON: %@", error]
+    };
   }
 
-  return obj;
+  return @{ @"value": obj };
 }
 
 static NSString* orNil(NSString *s) {
@@ -137,12 +139,12 @@ static NSString* sqlErrorResult(NSArray* result) {
   return self;
 }
 
-+ (NSString *)serialize:(NSObject *)obj
++ (NSDictionary *)serialize:(NSObject *)obj
 {
   return serialize(obj);
 }
 
-+ (NSObject *)deserialize:(NSString *)json
++ (NSDictionary *)deserialize:(NSString *)json
 {
   return deserialize(json);
 }
@@ -210,8 +212,7 @@ resultRows:(NSArray *)result
   @catch (NSException *exception) {
     NSDictionary *rollbackResult = [self sql:@"rollback" args:nil readOnly:NO];
     if (isError(rollbackResult)) {
-      // TODO
-      NSLog(@"SQL error while attempting rollback after exception: %@", rollbackResult);
+      NSLog(@"OfflineFilesPlugin: SQL error while attempting rollback after exception: %@", rollbackResult);
     }
     return exceptionResult(exception);
   }
@@ -224,8 +225,7 @@ resultRows:(NSArray *)result
     if (isError(result)) {
       NSDictionary *rollbackResult = [self sql:@"rollback" args:nil readOnly:NO];
       if (isError(rollbackResult)) {
-        // TODO
-        NSLog(@"SQL error while attempting rollback after error: %@", rollbackResult);
+        NSLog(@"OfflineFilesPlugin: SQL error while attempting rollback after error: %@", rollbackResult);
       }
     } else {
       NSDictionary *commitResult = [self sql:@"commit" args:nil readOnly:NO];
@@ -277,8 +277,6 @@ resultRows:(NSArray *)result
          serverDoc text not null,                  \
          onClient integer not null,                \
          onServer integer not null,                \
-         uploadTaskId integer null default null,   \
-         downloadTaskId integer null default null, \
          toDownload integer not null,              \
          partition text not null,                  \
          deleted integer not null default 0,       \
@@ -403,18 +401,35 @@ configure:(NSDictionary *)configuration
 -(NSDictionary *)
 configureCollection:(NSDictionary *)collection
 {
-  return
+  NSString *collectionId = [collection objectForKey:@"collectionId"];
+  NSString *path         = [collection objectForKey:@"path"];
+
+  NSDictionary *r1 =
     [self
-      sql:@" insert or replace into collection  \
-               (collectionId, path)             \
-               values (?, ?)                    "
-      args:@[[collection objectForKey:@"collectionId"],
-             [collection objectForKey:@"path"]]
+      sql:@" select count(*) from collection where collectionId=? "
+      args:@[collectionId]
+      readOnly:YES];
+  if (isError(r1))
+    return r1;
+
+  if (((NSNumber *)[[[r1 objectForKey:@"rows"] objectAtIndex:0] objectForKey:@"count(*)"]).boolValue) {
+    return
+      [self
+        sql:@" update collection set path=? where collectionId=? "
+        args:@[path, collectionId]
+        readOnly:NO];
+  } else {
+    return
+      [self
+        sql:@" insert into collection (collectionId, path) \
+               values (?, ?)                               "
+      args:@[collectionId, path]
       readOnly:NO];
+  }
 }
 
 -(NSDictionary *)
-addUpload:(NSDictionary *)data
+addOriginal:(NSDictionary *)file
 {
   return
     [self
@@ -432,11 +447,11 @@ addUpload:(NSDictionary *)data
                   /* toDownload   */ 0,                         \
                   /* partition    */ ?)                         "
       args:@[
-        [data objectForKey:@"fileId"],
-        [data objectForKey:@"collectionId"],
-        [data objectForKey:@"filename"],
-        [data objectForKey:@"serverDoc"],
-        [data objectForKey:@"partition"]
+        [file objectForKey:@"fileId"],
+        [file objectForKey:@"collectionId"],
+        [file objectForKey:@"filename"],
+        [file objectForKey:@"serverDoc"],
+        [file objectForKey:@"partition"]
       ]
       readOnly:NO];
 }
@@ -510,8 +525,13 @@ addUpload:(NSDictionary *)data
 
 -(NSDictionary *)
 readAllFilesNeedingUpload:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds
 {
-  NSDictionary *r1 =
+  NSDictionary *r1 = [self loadExcludeTable:excludeFileIds];
+  if (isError(r1))
+    return r1;
+
+  NSDictionary *r2 =
     [self
       sql:@" select                                                         \
                fileId,                                                      \
@@ -522,12 +542,76 @@ readAllFilesNeedingUpload:(NSString *)collectionId
              from file                                                      \
              join collection on file.collectionId = collection.collectionId \
              where file.collectionId=? and original and onClient and        \
-                   not onServer and not uploaded                            "
+                   not onServer and not uploaded and                        \
+                   fileId not in (select fileId from excludeFiles)          "
       args:@[collectionId]
       readOnly:YES];
+  if (isError(r2)) {
+    [self dropExcludeFilesTable];
+    return r2;
+  }
+  NSArray *files = [r2 objectForKey:@"rows"];
+
+  NSDictionary *r3 = [self dropExcludeFilesTable];
+  if (isError(r3))
+    return r3;
+
+  return @{ @"files":files };
+}
+
+-(NSDictionary *)
+readAllUploadJobFiles:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds
+{
+  NSDictionary *r1 = [self loadExcludeTable:excludeFileIds];
   if (isError(r1))
     return r1;
-  return @{ @"files": [r1 objectForKey:@"rows"] };
+
+  NSDictionary *r2 =
+    [self
+      sql:@" select                                                         \
+               fileId,                                                      \
+               file.collectionId,                                           \
+               filename,                                                    \
+               serverDoc,                                                   \
+               collection.path as collectionPath                            \
+             from file                                                      \
+             join collection on file.collectionId = collection.collectionId \
+             where fileId in (                                              \
+                     select fileId from jobFile                             \
+                       join job on jobFile.jobId = job.jobId                \
+                       where job.collectionId=?) and                        \
+                   fileId not in (select fileId from excludeFiles)          "
+      args:@[collectionId]
+      readOnly:YES];
+  if (isError(r2)) {
+    [self dropExcludeFilesTable];
+    return r2;
+  }
+  NSArray *files = [r2 objectForKey:@"rows"];
+
+  NSDictionary *r3 = [self dropExcludeFilesTable];
+  if (isError(r3))
+    return r3;
+
+  return @{ @"files":files };
+}
+
+
+-(NSDictionary *)
+readUploads:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds
+{
+  NSDictionary *r1 = [self readAutoUpload:collectionId];
+  if (isError(r1))
+    return r1;
+  BOOL autoUpload = ((NSNumber *) [r1 objectForKey:@"autoUpload"]).boolValue;
+
+  if (autoUpload) {
+    return [self readAllFilesNeedingUpload:collectionId excluding:excludeFileIds];
+  } else {
+    return [self readAllUploadJobFiles:collectionId excluding:excludeFileIds];
+  }
 }
 
 -(NSDictionary *)
@@ -607,30 +691,29 @@ readAllFilesNeedingUpload:(NSString *)collectionId
 {
   return
     [self
-      sql:@" drop table excludeFiles "
+      sql:@" drop table if exists excludeFiles "
       args:@[]
       readOnly:NO];
 }
 
--(NSDictionary *)
-allDownloads:(NSString *)collectionId
-excluding:(NSArray *)excludeFileIds
+-(NSDictionary *)createExcludeFilesTable
 {
-  NSDictionary *r0 =
-    [self
-      sql:@" drop table if exists excludeFiles "
-      args:@[]
-      readOnly:NO];
-  if (isError(r0))
-    return r0;
-
-  NSDictionary *r1 =
+  return
     [self
       sql:@" create temporary table excludeFiles( \
                fileId text not null primary key   \
              )                                    "
       args:@[]
       readOnly:NO];
+}
+
+-(NSDictionary *)loadExcludeTable:(NSArray *)excludeFileIds
+{
+  NSDictionary *r0 = [self dropExcludeFilesTable];
+  if (isError(r0))
+    return r0;
+
+  NSDictionary *r1 = [self createExcludeFilesTable];
   if (isError(r1))
     return r1;
 
@@ -646,37 +729,64 @@ excluding:(NSArray *)excludeFileIds
     }
   }
 
-  NSDictionary *r3 =
-    [self
-      sql:@" update file set toDownload=1                       \
-               where collectionId=? and                         \
-                     onServer and not onClient and not deleted  "
-      args:@[collectionId]
-      readOnly:NO];
-  if (isError(r3)) {
-    [self dropExcludeFilesTable];
-    return r3;
-  }
+  return @{};
+}
 
-  NSDictionary *r4 =
+-(NSDictionary *)readDownloadsNotExcluded:(NSString *)collectionId
+{
+  NSDictionary *r1 =
     [self
       sql:@" select fileId from file                                 \
                where collectionId=? and toDownload and               \
                      fileId not in (select fileId from excludeFiles) "
       args:@[collectionId]
       readOnly:NO];
-  if (isError(r4)) {
+  if (isError(r1)) {
     [self dropExcludeFilesTable];
-    return r4;
+    return r1;
   }
 
-  NSDictionary *r5 = [self dropExcludeFilesTable];
-  if (isError(r5))
-    return r5;
+  NSArray *fileIds = Underscore.pluck([r1 objectForKey:@"rows"], @"fileId");
 
-  NSArray *fileIds = Underscore.pluck([r4 objectForKey:@"rows"], @"fileId");
+  NSDictionary *r2 = [self dropExcludeFilesTable];
+  if (isError(r2))
+    return r2;
 
   return @{ @"fileIds": fileIds };
+}
+
+-(NSDictionary *)
+downloadAll:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds
+{
+  NSDictionary *r1 = [self loadExcludeTable:excludeFileIds];
+  if (isError(r1))
+    return r1;
+
+  NSDictionary *r2 =
+    [self
+      sql:@" update file set toDownload=1                       \
+               where collectionId=? and                         \
+                     onServer and not onClient and not deleted  "
+      args:@[collectionId]
+      readOnly:NO];
+  if (isError(r2)) {
+    [self dropExcludeFilesTable];
+    return r2;
+  }
+
+  return [self readDownloadsNotExcluded:collectionId];
+}
+
+-(NSDictionary *)
+readDownloads:(NSString *)collectionId
+excluding:(NSArray *)excludeFileIds
+{
+  NSDictionary *r1 = [self loadExcludeTable:excludeFileIds];
+  if (isError(r1))
+    return r1;
+
+  return [self readDownloadsNotExcluded:collectionId];
 }
 
 -(NSDictionary *)readDownloads
@@ -687,7 +797,6 @@ excluding:(NSArray *)excludeFileIds
            file.collectionId,                                            \
            filename,                                                     \
            collection.path as collectionPath,                            \
-           downloadTaskId                                                \
          from file                                                       \
          join collection on file.collectionId = collection.collectionId  \
          where toDownload and onServer and not onClient and not deleted  "
@@ -747,28 +856,6 @@ uploadComplete:(NSString *)fileId
       readOnly:NO];
 }
 
--(NSDictionary *)
-setUpload:(NSString *)fileId
-taskId:(NSNumber *)taskId
-{
-  return
-    [self
-      sql:@" update file set uploadTaskId=? where fileId=? "
-      args:@[taskId, fileId]
-      readOnly:NO];
-}
-
--(NSDictionary *)
-setDownload:(NSString *)fileId
-taskId:(NSNumber *)taskId
-{
-  return
-    [self
-      sql:@" update file set downloadTaskId=? where fileId=? "
-      args:@[taskId, fileId]
-      readOnly:NO];
-}
-
 +(NSNumber *)asBool:(NSNumber *)n
 {
   return [NSNumber numberWithBool:[n integerValue] == 1];
@@ -780,6 +867,7 @@ fileFields:(NSDictionary *)row
   return @{
     @"fileId"   : [row objectForKey:@"fileId"],
     @"original" : [Data asBool:[row objectForKey:@"original"]],
+    @"filename" : [row objectForKey:@"filename"],
     @"serverDoc": [row objectForKey:@"serverDoc"],
     @"onClient" : [Data asBool:[row objectForKey:@"onClient"]],
     @"onServer" : [Data asBool:[row objectForKey:@"onServer"]],
@@ -796,6 +884,7 @@ readFile:(NSString *)fileId
       sql:@" select                   \
                fileId,                \
                original,              \
+               filename,              \
                serverDoc,             \
                onClient,              \
                onServer,              \
@@ -816,20 +905,23 @@ readFile:(NSString *)fileId
 }
 
 -(NSDictionary *)
-readFilesForPartition:(NSString *)partition
+readFilesForPartition:(NSString *)collectionId
+partition:(NSString *)partition
 {
   NSDictionary *r1 =
     [self
-      sql:@" select                      \
-               fileId,                   \
-               original,                 \
-               serverDoc,                \
-               onClient,                 \
-               onServer,                 \
-               partition,                \
-               deleted                   \
-             from file where partition=? "
-      args:@[partition]
+      sql:@" select                                      \
+               fileId,                                   \
+               original,                                 \
+               filename,                                 \
+               serverDoc,                                \
+               onClient,                                 \
+               onServer,                                 \
+               partition,                                \
+               deleted                                   \
+             from file where collectionId=? and          \
+               partition=? and not deleted               "
+      args:@[collectionId, partition]
       readOnly:YES];
   if (isError(r1))
     return r1;
@@ -927,17 +1019,7 @@ switchToAutoUploadOn:(NSString *)collectionId
       if (isError(r2))
         return r2;
 
-      // TODO remove
-      NSDictionary *r3 =
-        [self
-          sql:@" update file set uploadTaskId=null  \
-                   where collectionId=?             "
-          args:@[collectionId]
-          readOnly:NO];
-      if (isError(r3))
-        return r3;
-
-      return okResult();
+      return @{};
     }];
 }
 
@@ -1145,8 +1227,8 @@ deleteUnmarked:(NSString *)collectionId
     [self
       sql:@" select fileId from file                 \
                where collectionId=? and              \
-                     not marked and                  \
-                     not (original and not deleted)  "
+                     not marked and not original and \
+                     not deleted                     "
       args:@[collectionId]
       readOnly:YES];
   if (isError(r1))
@@ -1159,8 +1241,8 @@ deleteUnmarked:(NSString *)collectionId
     [self
       sql:@" delete from file                        \
                where collectionId=? and              \
-                     not marked and                  \
-                     not (original and not deleted)  "
+                     not marked and not original and \
+                     not deleted                     "
       args:@[collectionId]
       readOnly:NO];
   if (isError(r2))
@@ -1195,6 +1277,22 @@ removeDeletedFile:(NSString *)fileId
   if (isError(r1))
     return r1;
   return @{};
+}
+
+-(NSDictionary *)
+readDeletedFiles:(NSString *)collectionId
+{
+  NSDictionary *r1 =
+    [self
+      sql:@" select fileId from file where collectionId=? and deleted "
+      args:@[collectionId]
+      readOnly:YES];
+  if (isError(r1))
+    return r1;
+
+  return @{
+    @"fileIds": Underscore.pluck([r1 objectForKey:@"rows"], @"fileId")
+  };
 }
 
 @end
