@@ -4,6 +4,8 @@ typedef void (^Callback)(NSDictionary *);
 
 @interface Data : NSObject
 
++(Data *)create:(Callback)eventCallback;
+
 +(BOOL)isError:(NSDictionary *)result;
 
 +(NSDictionary *)okResult;
@@ -63,7 +65,9 @@ excluding:(NSArray *)excludeFileIds;
 
 -(NSDictionary *)removeJob:(NSString *)jobId;
 
--(NSDictionary *)uploadComplete:(NSString *)fileId;
+-(NSDictionary *)
+uploadComplete:(NSString *)collectionId
+fileId:(NSString *)fileId;
 
 -(NSDictionary *)readFile:(NSString *)fileId;
 
@@ -95,7 +99,9 @@ partition:(NSString *)partition;
 
 -(NSDictionary *)deleteUnmarked:(NSString *)collectionId;
 
--(NSDictionary *)markFileAsDeleted:(NSString *)fileId;
+-(NSDictionary *)
+markFileAsDeleted:(NSString *)collectionId
+fileId:(NSString *)fileId;
 
 -(NSDictionary *)removeDeletedFile:(NSString *)fileId;
 

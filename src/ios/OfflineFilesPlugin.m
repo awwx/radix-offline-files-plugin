@@ -35,7 +35,9 @@
 
   self.savedEvents = [NSMutableArray arrayWithCapacity:10];
 
-  self.data = [[Data alloc] init];
+  self.data = [Data create:^(NSDictionary *event) {
+    [self emitEvent:event];
+  }];
 
   [self
     name:@"startup"
@@ -352,7 +354,7 @@ didCompleteWithError:(NSError *)error
 
       if ([task isKindOfClass:[NSURLSessionUploadTask class]]) {
         NSDictionary *uploadCompleteResult =
-          [self.data uploadComplete:fileId];
+          [self.data uploadComplete:collectionId fileId:fileId];
         if ([Data isError:uploadCompleteResult]) {
           callback(uploadCompleteResult);
           return;
@@ -1389,13 +1391,13 @@ fileIds:(NSArray *)fileIds
 
 -(void)mergeServerDoc:(CDVInvokedUrlCommand*)command
 {
-  NSDictionary *info = [command.arguments objectAtIndex:0];
+  NSDictionary *fileInfo = [command.arguments objectAtIndex:0];
 
   [self
     name:@"mergeServerDoc"
     command:command
     bgResult:^(){
-      return [self.data mergeServerDoc:info];
+      return [self.data mergeServerDoc:fileInfo];
     }];
 }
 
@@ -1449,13 +1451,14 @@ fileIds:(NSArray *)fileIds
 
 -(void)markFileAsDeleted:(CDVInvokedUrlCommand*)command
 {
-  NSString *fileId = [command.arguments objectAtIndex:0];
+  NSString *collectionId = [command.arguments objectAtIndex:0];
+  NSString *fileId       = [command.arguments objectAtIndex:1];
 
   [self
     name:@"markFileAsDeleted"
     command:command
     bgResult:^(){
-      return [self.data markFileAsDeleted:fileId];
+      return [self.data markFileAsDeleted:collectionId fileId:fileId];
     }];
 }
 
