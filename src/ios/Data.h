@@ -91,8 +91,6 @@ partition:(NSString *)partition;
 
 -(NSDictionary *)mergeServerDoc:(NSDictionary *)info;
 
--(NSDictionary *)setNotOnServer:(NSString *)fileId;
-
 -(NSDictionary *)unmergeServerDoc:(NSString *)fileId;
 
 -(NSDictionary *)beginMark:(NSString *)collectionId;

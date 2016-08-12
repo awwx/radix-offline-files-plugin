@@ -1401,18 +1401,6 @@ fileIds:(NSArray *)fileIds
     }];
 }
 
--(void)setNotOnServer:(CDVInvokedUrlCommand*)command
-{
-  NSString *fileId = [command.arguments objectAtIndex:0];
-
-  [self
-    name:@"setNotOnServer"
-    command:command
-    bgResult:^(){
-      return [self.data setNotOnServer:fileId];
-    }];
-}
-
 -(void)unmergeServerDoc:(CDVInvokedUrlCommand*)command
 {
   NSString *fileId = [command.arguments objectAtIndex:0];

@@ -1184,15 +1184,6 @@ mergeServerDoc:(NSDictionary *)fileInfo
   }
 }
 
--(NSDictionary *)setNotOnServer:(NSString *)fileId
-{
-  return
-    [self
-      sql:@" update file set onServer=0 where fileId=? "
-      args:@[fileId]
-      readOnly:NO];
-}
-
 // when a server doc exits the subscription or loses its
 // filename field, mark onServer false
 //
