@@ -4,6 +4,8 @@
 
 #import "lib/Underscore/Underscore.h"
 
+static BOOL debug = NO;
+
 @interface OfflineFilesPlugin ()
 
 @property NSString *eventCallbackId;
@@ -16,7 +18,6 @@
 
 @property NSMutableArray *savedEvents;
 
-// TODO bool?
 @property NSNumber *started;
 
 @property Queue *serializedQueue;
@@ -27,6 +28,9 @@
 
 - (void)pluginInitialize
 {
+  if (debug)
+    NSLog(@"pluginInitialize");
+
   self.started = @(NO);
 
   [self createStagingDir];
@@ -45,6 +49,8 @@
       callback([self.data startup]);
     }
     successCallback:^(NSDictionary *result) {
+      if (debug)
+        NSLog(@"SQL started");
       self.started = @(YES);
       [self emitEvent:@{@"event": @"started"}];
     }];
@@ -264,6 +270,9 @@ type:(NSString*)type
 handleEventsForBackgroundURLSession:(NSString *)identifier
 completionHandler:(void (^)(void))completionHandler
 {
+  if (debug)
+    NSLog(@"handleEventsForBackgroundURLSession");
+
   self.backgroundEventsCompletionHandler = completionHandler;
 }
 
@@ -284,6 +293,9 @@ didBecomeInvalidWithError:(NSError *)error
 
 - (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session
 {
+  if (debug)
+    NSLog(@"URLSessionDidFinishEventsForBackgroundURLSession");
+
   [[NSOperationQueue mainQueue] addOperationWithBlock:^{
     if (self.backgroundEventsCompletionHandler)
       self.backgroundEventsCompletionHandler();
@@ -293,28 +305,59 @@ didBecomeInvalidWithError:(NSError *)error
 
 
 +(NSString *)
-composeTaskDescription:(NSString *)collectionId
-fileId:(NSString *)fileId
+task:(NSURLSessionTask *)task
+queryField:(NSString *)name
 {
-  return
-    [[collectionId stringByAppendingString:@":"]
-      stringByAppendingString:fileId];
+  NSURLQueryItem *found =
+    Underscore.find(
+      [NSURLComponents
+        componentsWithURL:task.originalRequest.URL
+        resolvingAgainstBaseURL:NO].queryItems,
+      ^BOOL(NSURLQueryItem *item) {
+        return [name isEqual:item.name];
+      }
+    );
+
+  if (found)
+    return found.value;
+  else
+    return nil;
 }
 
-+(NSDictionary *)decomposeTaskDescription:(NSString *)description
+-(NSString *)collectionIdOfUploadTask:(NSURLSessionUploadTask *)task
 {
-  NSArray *components = [description componentsSeparatedByString:@":"];
-  return @{
-    @"collectionId": [components objectAtIndex:0],
-    @"fileId":       [components objectAtIndex:1]
-  };
+  NSString *collectionId =
+    [OfflineFilesPlugin task:task queryField:@"collection"];
+
+  if (! collectionId)
+    [self emitError:@"collectionId not found in upload task query string"];
+
+  return collectionId;
 }
 
-+(NSString *)taskFileId:(NSURLSessionTask *)task
+-(NSString *)fileIdOfUploadTask:(NSURLSessionUploadTask *)task
 {
-  return [[OfflineFilesPlugin decomposeTaskDescription:task.taskDescription]
-            objectForKey:@"fileId"];
+  NSString * fileId =
+    [OfflineFilesPlugin task:task queryField:@"file"];
+
+  if (! fileId)
+    [self emitError:@"fileId not found in upload task query string"];
+
+  return fileId;
 }
+
++(NSString *)collectionIdOfDownloadTask:(NSURLSessionDownloadTask *)task
+{
+  NSArray *cs = task.originalRequest.URL.pathComponents;
+  return [cs objectAtIndex:cs.count - 2];
+}
+
++(NSString *)fileIdOfDownloadTask:(NSURLSessionDownloadTask *)task
+{
+  NSArray *cs = task.originalRequest.URL.pathComponents;
+  return [cs objectAtIndex:cs.count - 1];
+}
+
 
 //
 // NSURLSessionTaskDelegate methods
@@ -324,6 +367,9 @@ fileId:(NSString *)fileId
 task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error
 {
+  if (debug)
+    NSLog(@"file transfer task completed");
+
   if (error != nil) {
     if (error.code == NSURLErrorCancelled) {
       // expected
@@ -338,8 +384,8 @@ didCompleteWithError:(NSError *)error
   if (response.statusCode != 200) {
     // TODO user error
     [self emitError:[NSString stringWithFormat:
-      @"transfer failed for file %@ with status code %ld",
-      task.taskDescription,
+      @"transfer failed for %@ with status code %ld",
+      task.originalRequest.URL,
       (long)response.statusCode]];
     return;
   }
@@ -347,12 +393,23 @@ didCompleteWithError:(NSError *)error
   [self
     name:@"transfer task completed"
     background:^(Callback callback) {
-      NSDictionary *description =
-        [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
-      NSString *collectionId = [description objectForKey:@"collectionId"];
-      NSString *fileId       = [description objectForKey:@"fileId"];
-
       if ([task isKindOfClass:[NSURLSessionUploadTask class]]) {
+        NSURLSessionUploadTask *uploadTask = (NSURLSessionUploadTask *)task;
+        NSString *collectionId =
+          [self collectionIdOfUploadTask:uploadTask];
+        NSString *fileId =
+          [self fileIdOfUploadTask:uploadTask];
+
+        if (! collectionId) {
+          [self emitError:@"collection not found in task url query string"];
+          return;
+        }
+
+        if (! fileId) {
+          [self emitError:@"file not found in task url query string"];
+          return;
+        }
+
         NSDictionary *uploadCompleteResult =
           [self.data uploadComplete:collectionId fileId:fileId];
         if ([Data isError:uploadCompleteResult]) {
@@ -479,12 +536,12 @@ toURL:(NSURL *)destination
 downloadTask:(NSURLSessionDownloadTask *)downloadTask
 didFinishDownloadingToURL:(NSURL *)location
 {
+  if (debug)
+    NSLog(@"download task finished");
+
   NSHTTPURLResponse *response = (NSHTTPURLResponse *)downloadTask.response;
 
-  NSDictionary *description =
-    [OfflineFilesPlugin decomposeTaskDescription:downloadTask.taskDescription];
-
-  NSString *fileId = [description objectForKey:@"fileId"];
+  NSString *fileId = [OfflineFilesPlugin fileIdOfDownloadTask:downloadTask];
 
   bool successful = YES;
 
@@ -576,6 +633,8 @@ didFinishDownloadingToURL:(NSURL *)location
     NSURLSessionConfiguration *configuration =
      [NSURLSessionConfiguration
        backgroundSessionConfigurationWithIdentifier:@"offline-files"];
+
+    configuration.sessionSendsLaunchEvents = NO;
 
     session = [NSURLSession
                 sessionWithConfiguration:configuration
@@ -676,6 +735,9 @@ catchErr:(void (^)(void))f
 collection:(NSString *)collectionId
 notify:(NSString *)notificationJSON
 {
+  if (debug)
+    NSLog(@"upload job complete");
+
   UILocalNotification *n = [[UILocalNotification alloc] init];
 
   NSDictionary *r1 = [Data deserialize:notificationJSON];
@@ -925,7 +987,9 @@ result:(NSDictionary *)result
   [self.session getTasksWithCompletionHandler:
     ^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
       for (NSURLSessionUploadTask *uploadTask in uploadTasks) {
-        if ([fileId isEqual:[OfflineFilesPlugin taskFileId:uploadTask]]) {
+        NSString *taskFileId =
+          [self fileIdOfUploadTask:uploadTask];
+        if (fileId && [fileId isEqual:taskFileId]) {
           [uploadTask cancel];
           break;
         }
@@ -984,7 +1048,10 @@ andRespond:(CDVInvokedUrlCommand*)command
       NSMutableDictionary *taskByFileId =
         [NSMutableDictionary dictionaryWithCapacity:uploadTasks.count];
       for (NSURLSessionUploadTask *task in uploadTasks) {
-        [taskByFileId setObject:task forKey:[OfflineFilesPlugin taskFileId:task]];
+        NSString *taskFileId =
+          [self fileIdOfUploadTask:task];
+        if (taskFileId)
+          [taskByFileId setObject:task forKey:taskFileId];
       }
       for (NSDictionary *file in files) {
         if (! [taskByFileId objectForKey:[file objectForKey:@"fileId"]]) {
@@ -1131,9 +1198,6 @@ andRespond:(CDVInvokedUrlCommand*)command
   NSString *collectionId = [command.arguments objectAtIndex:0];
   NSString *fileId       = [command.arguments objectAtIndex:1];
 
-  NSString *description =
-    [OfflineFilesPlugin composeTaskDescription:collectionId fileId:fileId];
-
   // first get tasks, and then enter the serial queue
 
   [self.session getTasksWithCompletionHandler:
@@ -1143,17 +1207,31 @@ andRespond:(CDVInvokedUrlCommand*)command
       if (Underscore.find(
             downloadTasks,
             ^BOOL(NSURLSessionDownloadTask* task) {
-              return [description isEqual:task.taskDescription];
+              NSString *taskCollectionId =
+                [OfflineFilesPlugin collectionIdOfDownloadTask:task];
+              NSString *taskFileId =
+                [OfflineFilesPlugin fileIdOfDownloadTask:task];
+              if (! taskCollectionId || ! taskFileId)
+                return NO;
+              return ([collectionId isEqual:taskCollectionId] &&
+                      [fileId isEqual:taskFileId]);
             }))
       {
         [self respond:command result:@{ @"result": @"already-downloading" }];
         return;
       }
 
+      // Now enter the serial queue
+
       [self
         name:@"download"
         command:command
         bgResult:^() {
+          NSDictionary *r1 =
+            [self.data download:fileId];
+          if ([Data isError:r1])
+            return r1;
+
           return [self addDownloadTask:collectionId fileId:fileId];
         }];
   }];
@@ -1170,13 +1248,18 @@ downloadTasks:(NSArray *)downloadTasks
     Underscore.arrayMap(
       downloadTasks,
       ^NSString *(NSURLSessionDownloadTask* task) {
-        NSDictionary *fields =
-          [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
-        if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
-          return [fields objectForKey:@"fileId"];
+        NSString *taskCollectionId =
+          [OfflineFilesPlugin collectionIdOfDownloadTask:task];
+        NSString *taskFileId =
+          [OfflineFilesPlugin fileIdOfDownloadTask:task];
+        if (! taskCollectionId || ! taskFileId)
+          return nil;
+        if ([collectionId isEqual:taskCollectionId])
+          return taskFileId;
         else
           return nil;
-      });
+      }
+    );
 }
 
 -(NSArray *)
@@ -1187,10 +1270,14 @@ uploadTasks:(NSArray *)uploadTasks
     Underscore.arrayMap(
       uploadTasks,
       ^NSString *(NSURLSessionUploadTask *task) {
-        NSDictionary *fields =
-          [OfflineFilesPlugin decomposeTaskDescription:task.taskDescription];
-        if ([collectionId isEqual:[fields objectForKey:@"collectionId"]])
-          return [fields objectForKey:@"fileId"];
+        NSString *taskCollectionId =
+          [self collectionIdOfUploadTask:task];
+        NSString *taskFileId =
+          [self fileIdOfUploadTask:task];
+        if (! taskCollectionId || ! taskFileId)
+          return nil;
+        if ([collectionId isEqual:taskCollectionId])
+          return taskFileId;
         else
           return nil;
       });
@@ -1234,7 +1321,6 @@ uploadTasks:(NSArray *)uploadTasks
   }];
 }
 
-
 -(void)resumeTransfers:(CDVInvokedUrlCommand*)command
 {
   NSString *collectionId = [command.arguments objectAtIndex:0];
@@ -1272,8 +1358,6 @@ uploadTasks:(NSArray *)uploadTasks
             return r2;
           NSArray *files = [r2 objectForKey:@"files"];
 
-          NSLog(@"need uploads: %@", files);
-
           NSDictionary *r3 = [self.data readConfig:@"uploadUrl"];
           if ([Data isError:r3])
             return r3;
@@ -1309,13 +1393,16 @@ fileId:(NSString *)fileId
 filename:(NSString *)filename
 serverDoc:(NSString *)serverDoc
 {
-  // TODO
   NSMutableCharacterSet *set =
     [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
   [set removeCharactersInString:@"&+=?"];
 
   NSString *encodedCollection =
     [collectionId
+      stringByAddingPercentEncodingWithAllowedCharacters:set];
+
+  NSString *encodedFile =
+    [fileId
       stringByAddingPercentEncodingWithAllowedCharacters:set];
 
   NSString *encodedDoc =
@@ -1329,8 +1416,10 @@ serverDoc:(NSString *)serverDoc
 
   NSURL *uploadURL =
     [NSURL URLWithString:
-      [[[[uploadUrl stringByAppendingString:@"?collection="]
-          stringByAppendingString:encodedCollection]
+      [[[[[[uploadUrl stringByAppendingString:@"?collection="]
+            stringByAppendingString:encodedCollection]
+           stringByAppendingString:@"&file="]
+          stringByAppendingString:encodedFile]
          stringByAppendingString:@"&doc="]
         stringByAppendingString:encodedDoc]];
 
@@ -1341,10 +1430,6 @@ serverDoc:(NSString *)serverDoc
     [self.session
       uploadTaskWithRequest:request
       fromFile:fileURL];
-
-  uploadTask.taskDescription =
-    [[collectionId stringByAppendingString:@":"]
-       stringByAppendingString:fileId];
 
   [uploadTask resume];
 }
@@ -1367,10 +1452,6 @@ fileId:(NSString *)fileId
 
   NSURLSessionDownloadTask *downloadTask =
     [self.session downloadTaskWithURL:downloadURL];
-
-  downloadTask.taskDescription =
-    [[collectionId stringByAppendingString:@":"]
-       stringByAppendingString:fileId];
 
   [downloadTask resume];
 

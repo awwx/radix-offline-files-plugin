@@ -293,14 +293,40 @@ resultRows:(NSArray *)result
          uploaded integer not null default 0       \
        )                                           ",
 
-    // TODO rename to uploadJob
-    @" create table job (                   \
+    @" create index i_collection on file (     \
+         collectionId, deleted               \
+       )                                     ",
+
+    @" create index i_forUpload on file (               \
+         collectionId, original, onClient, onServer,  \
+         uploaded, deleted                            \
+       )                                              ",
+
+    @" create index i_forUploadPartition on file (      \
+         collectionId, partition, original, onClient, \
+         onServer, uploaded, deleted                  \
+       )                                              ",
+
+    @" create index i_toDownload on file (      \
+         collectionId, toDownload, onClient,  \
+         onServer, deleted                    \
+       )                                      ",
+
+    @" create index i_partition on file (     \
+         collectionId, partition, deleted   \
+       )                                    ",
+
+    @" create index i_marked on file (              \
+         collectionId, marked, original, deleted  \
+       )                                          ",
+
+    @" create table uploadJob (                   \
          jobId text not null primary key,   \
          collectionId text not null,        \
          notification text not null         \
        )                                    ",
 
-    @" create table jobFile (        \
+    @" create table uploadJobFile (        \
          jobId text not null,        \
          fileId text not null,       \
          primary key(jobId, fileId)  \
@@ -502,7 +528,7 @@ addOriginal:(NSDictionary *)file
     [self transaction:^{
       NSDictionary *r1 =
         [self
-          sql:@" insert into job                        \
+          sql:@" insert into uploadJob                        \
                    (jobId, collectionId, notification)  \
                    values (?, ?, ?)                     "
           args:@[jobId, collectionId, notification]
@@ -512,9 +538,9 @@ addOriginal:(NSDictionary *)file
 
       NSDictionary *r2 =
         [self
-          sql:@" insert into jobFile (jobId, fileId)          \
+          sql:@" insert into uploadJobFile (jobId, fileId)          \
                    select ? as jobId, fileId from file        \
-                     where original and collectionId=? and    \
+                     where collectionId=? and original and    \
                            onClient and not onServer and      \
                            not uploaded and not deleted       "
           args:@[jobId, collectionId]
@@ -549,7 +575,7 @@ addOriginal:(NSDictionary *)file
                    collection.path as collectionPath  \
                  from file  \
                  join collection on file.collectionId = collection.collectionId \
-                 where fileId in (select fileId from jobFile where jobId=?) "
+                 where fileId in (select fileId from uploadJobFile where jobId=?) "
           args:@[jobId]
           readOnly:YES];
       if (isError(r4))
@@ -615,9 +641,9 @@ excluding:(NSArray *)excludeFileIds
              from file                                                      \
              join collection on file.collectionId = collection.collectionId \
              where fileId in (                                              \
-                     select fileId from jobFile                             \
-                       join job on jobFile.jobId = job.jobId                \
-                       where job.collectionId=?) and                        \
+                     select fileId from uploadJobFile                             \
+                       join uploadJob on uploadJobFile.jobId = uploadJob.jobId      \
+                       where uploadJob.collectionId=?) and                        \
                    fileId not in (select fileId from excludeFiles)          "
       args:@[collectionId]
       readOnly:YES];
@@ -661,7 +687,7 @@ excluding:(NSArray *)excludeFileIds
     [self transaction:^{
       NSDictionary *r1 =
         [self
-          sql:@" insert into job                        \
+          sql:@" insert into uploadJob                        \
                    (jobId, collectionId, notification)  \
                    values (?, ?, ?)                     "
           args:@[jobId, collectionId, notification]
@@ -671,11 +697,11 @@ excluding:(NSArray *)excludeFileIds
 
       NSDictionary *r2 =
         [self
-          sql:@" insert into jobFile (jobId, fileId)                  \
-                   select ? as jobId, fileId from file                \
-                     where original and collectionId=? and            \
-                           partition=? and onClient and not onServer  \
-                           and not uploaded and not deleted           "
+          sql:@" insert into uploadJobFile (jobId, fileId)                    \
+                   select ? as jobId, fileId from file                  \
+                     where collectionId=? and partition=? and original  \
+                           and onClient and not onServer                \
+                           and not uploaded and not deleted             "
           args:@[jobId, collectionId, partition]
           readOnly:NO];
       if (isError(r2))
@@ -705,7 +731,7 @@ excluding:(NSArray *)excludeFileIds
                    collection.path as collectionPath  \
                  from file  \
                  join collection on file.collectionId = collection.collectionId \
-                 where fileId in (select fileId from jobFile where jobId=?) "
+                 where fileId in (select fileId from uploadJobFile where jobId=?) "
           args:@[jobId]
           readOnly:YES];
       if (isError(r4))
@@ -836,7 +862,7 @@ excluding:(NSArray *)excludeFileIds
            collection.path as collectionPath,                            \
          from file                                                       \
          join collection on file.collectionId = collection.collectionId  \
-         where toDownload and onServer and not onClient and not deleted  "
+         where toDownload and not onClient and onServer and not deleted  "
     args:nil
     readOnly:YES];
 }
@@ -846,7 +872,7 @@ readJobsOfFile:(NSString *)fileId
 {
   return
     [self
-      sql:@" select distinct jobId from jobFile where fileId=? "
+      sql:@" select distinct jobId from uploadJobFile where fileId=? "
       args:@[fileId]
       readOnly:YES];
 }
@@ -856,7 +882,7 @@ fileTasksComplete:(NSString *)fileId
 {
   return
     [self
-      sql:@" delete from jobFile where fileId=? "
+      sql:@" delete from uploadJobFile where fileId=? "
       args:@[fileId]
       readOnly:NO];
 }
@@ -866,9 +892,9 @@ jobsDone
 {
   return
     [self
-      sql:@" select jobId, notification from job where       \
-               not exists (select fileId from jobFile where  \
-                  jobFile.jobId = job.jobId)                 "
+      sql:@" select jobId, notification from uploadJob where       \
+               not exists (select fileId from uploadJobFile where  \
+                  uploadJobFile.jobId = uploadJob.jobId)                 "
       args:@[]
       readOnly:YES];
 }
@@ -878,7 +904,7 @@ removeJob:(NSString *)jobId
 {
   return
     [self
-      sql:@" delete from job where jobId=? "
+      sql:@" delete from uploadJob where jobId=? "
       args:@[jobId]
       readOnly:NO];
 }
@@ -1029,9 +1055,9 @@ removeAllJobs:(NSString *)collectionId
 {
   NSDictionary *r1 =
     [self
-      sql:@" delete from jobFile          \
+      sql:@" delete from uploadJobFile          \
                where jobId in             \
-                 (select jobId from job   \
+                 (select jobId from uploadJob   \
                     where collectionId=?) "
       args:@[collectionId]
       readOnly:NO];
@@ -1040,7 +1066,7 @@ removeAllJobs:(NSString *)collectionId
 
   NSDictionary *r2 =
     [self
-      sql:@" delete from job where collectionId=? "
+      sql:@" delete from uploadJob where collectionId=? "
       args:@[collectionId]
       readOnly:NO];
   if (isError(r2))
@@ -1175,10 +1201,18 @@ mergeServerDoc:(NSDictionary *)fileInfo
       readOnly:NO];
     if (isError(r3))
       return r3;
-    if ([[r3 objectForKey:@"rowsAffected"] integerValue] == 1)
+    BOOL didUpdate = [[r3 objectForKey:@"rowsAffected"] integerValue] == 1;
+
+    if (didUpdate) {
+      NSDictionary *r4 =
+        [self reportUploadCount:[fileInfo objectForKey:@"collectionId"]];
+      if (isError(r4))
+        return r4;
+
       return @{ @"action": @"update" };
-    else
+    } else {
       return @{};
+    }
   } else {
     return @{ @"error": @"multiple rows returned in mergeServerDoc" };
   }
@@ -1345,10 +1379,10 @@ reportUploadCount:(NSString *)collectionId
 {
   NSDictionary *r1 =
     [self
-      sql:@" select count(*) as count from file         \
-               where original and collectionId=? and    \
-                     onClient and not onServer and      \
-                     not uploaded and not deleted       "
+      sql:@" select count(*) as count from file       \
+               where collectionId=? and original and  \
+                     onClient and not onServer and    \
+                     not uploaded and not deleted     "
       args:@[collectionId]
       readOnly:YES];
   if (isError(r1))
