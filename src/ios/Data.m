@@ -783,7 +783,7 @@ excluding:(NSArray *)excludeFileIds
   for (NSString *fileId in excludeFileIds) {
     NSDictionary *r2 =
       [self
-        sql:@" insert into excludeFiles (fileId) values (?) "
+        sql:@" insert or ignore into excludeFiles (fileId) values (?) "
         args:@[fileId]
         readOnly:NO];
     if (isError(r2)) {

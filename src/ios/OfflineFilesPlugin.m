@@ -371,9 +371,13 @@ didCompleteWithError:(NSError *)error
     NSLog(@"file transfer task completed");
 
   if (error != nil) {
-    if (error.code == NSURLErrorCancelled) {
-      // expected
-    } else {
+    if (! (error.code == NSURLErrorCancelled ||
+           error.code == ECANCELED ||
+           // "Lost connection to background transfer service"
+           error.code == -997 ||
+           error.code == NSURLErrorCannotParseResponse ||
+           error.code == NSURLErrorUnknown))
+    {
       [self reportError:error forContext:@"transfer task completed"];
     }
     return;
