@@ -287,10 +287,6 @@ didBecomeInvalidWithError:(NSError *)error
   [self reportError:error forContext:@"session became invalid with error"];
 }
 
-// URLSession:didReceiveChallenge:completionHandler:
-// as this is not implemented, the session calls
-// `URLSession:task:didReceiveChallenge:completionHandler:` instead.
-
 - (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session
 {
   if (debug)
@@ -457,29 +453,6 @@ didCompleteWithError:(NSError *)error
       }
     }];
 }
-
-- (void)URLSession:(NSURLSession *)session
-task:(NSURLSessionTask *)task
-didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
-completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition,
-                            NSURLCredential *credential))completionHandler
-{
-  completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-}
-
-
-- (void)URLSession:(NSURLSession *)session
-task:(NSURLSessionTask *)task
-didSendBodyData:(int64_t)bytesSent
-totalBytesSent:(int64_t)totalBytesSent
-totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend
-{
-}
-
-
-//
-// NSURLSessionDownloadDelegate
-//
 
 +(NSURL *)noCloudDir
 {
